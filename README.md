@@ -1,8 +1,8 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+推しカレ（Next.js App Router）
 
 ## Getting Started
 
-First, run the development server:
+セットアップ手順は `docs/setup.md` を参照してください。
 
 ```bash
 npm run dev
