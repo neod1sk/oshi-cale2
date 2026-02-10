@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "@/lib/i18n";
 import { t } from "@/lib/i18n";
 import type { IdolWithDiff } from "@/lib/birthday-filters";
@@ -9,11 +9,16 @@ import { buildBirthdayXIntentUrl } from "@/lib/x-intent";
 import { parseMmdd } from "@/lib/birthday";
 
 const LS_OSHI_ONLY = "oshi:calendar:oshiOnly";
-const LS_OSHI_IDS = "oshi:ids";
+const LS_OSHI_IDS = "oshicale:favorites";
 
 function monthLabel(lang: Lang, month: number): string {
   if (lang === "ko") return `${month}월`;
   return `${month}月`;
+}
+
+function monthCountLabel(lang: Lang, n: number): string {
+  if (lang === "ko") return `${n}명`;
+  return `${n}人`;
 }
 
 function mmddLabel(mmdd: string): string {
@@ -97,10 +102,40 @@ export function BirthdayTimeline({
 
   const [oshiOnly, setOshiOnly] = useState(false);
   const [oshiIds, setOshiIds] = useState<Set<string>>(new Set());
+  const [favoritesLoaded, setFavoritesLoaded] = useState(false);
+  const [monthNavHeight, setMonthNavHeight] = useState(0);
+  const [useFixedMonthNav, setUseFixedMonthNav] = useState(false);
+  const [activeMonth, setActiveMonth] = useState<number | null>(null);
+  const monthNavRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setOshiOnly(loadBool(LS_OSHI_ONLY, false));
     setOshiIds(new Set(loadStringArray(LS_OSHI_IDS)));
+    setFavoritesLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    // Fallback: if sticky is not supported, use fixed mode.
+    if (typeof CSS !== "undefined" && !CSS.supports("position", "sticky")) {
+      setUseFixedMonthNav(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    const el = monthNavRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      setMonthNavHeight((prev) => (prev === h ? prev : h));
+    };
+
+    update();
+
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => update());
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   useEffect(() => {
@@ -108,8 +143,9 @@ export function BirthdayTimeline({
   }, [oshiOnly]);
 
   useEffect(() => {
+    if (!favoritesLoaded) return;
     saveStringArray(LS_OSHI_IDS, Array.from(oshiIds));
-  }, [oshiIds]);
+  }, [oshiIds, favoritesLoaded]);
 
   const filtered = useMemo(() => {
     if (!oshiOnly) return idols;
@@ -119,6 +155,12 @@ export function BirthdayTimeline({
   const groups = useMemo(() => groupByUpcomingMonth(filtered), [filtered]);
 
   const months = useMemo(() => groups.map((g) => g.month), [groups]);
+
+  useEffect(() => {
+    if (activeMonth !== null) return;
+    if (months.length === 0) return;
+    setActiveMonth(months[0]);
+  }, [months, activeMonth]);
 
   const toggleOshi = (id: string) => {
     setOshiIds((prev) => {
@@ -130,12 +172,20 @@ export function BirthdayTimeline({
   };
 
   const jumpToMonth = (month: number) => {
+    setActiveMonth(month);
     const el = document.getElementById(`month-${month}`);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const sectionStyle = {
+    ["--month-nav-h" as never]: `${monthNavHeight}px`,
+  } as React.CSSProperties;
+
   return (
-    <section className="mx-auto w-full max-w-xl px-5 pb-16">
+    <section
+      className="mx-auto w-full max-w-xl px-5 pb-16"
+      style={sectionStyle}
+    >
       <div className="mt-4 space-y-3">
         <div className="flex items-center justify-between">
           <h1 className="text-base font-semibold text-zinc-950">
@@ -145,31 +195,53 @@ export function BirthdayTimeline({
             type="button"
             onClick={() => setOshiOnly((v) => !v)}
             className={[
-              "rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+              "rounded-full border px-3 py-1 text-xs font-semibold transition-[background-color,transform,box-shadow] hover:shadow-sm active:scale-[0.98]",
               oshiOnly
-                ? "border-zinc-900 bg-zinc-900 text-white"
+                ? "border-black/10 bg-white/70 text-zinc-900 hover:bg-white"
                 : "border-black/10 bg-white/70 text-zinc-700 hover:bg-white",
             ].join(" ")}
           >
             {oshiOnly ? copy.calendar.oshiOnly : copy.calendar.all}
           </button>
         </div>
+      </div>
 
-        <div className="rounded-2xl border border-black/5 bg-white/60 p-3 backdrop-blur">
-          <div className="text-[11px] font-medium text-zinc-500">
-            {copy.calendar.monthJump}
-          </div>
-          <div className="mt-2 flex gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch]">
-            {months.map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => jumpToMonth(m)}
-                className="shrink-0 rounded-full border border-black/10 bg-white/70 px-3 py-1 text-xs font-semibold text-zinc-700 hover:bg-white"
-              >
-                {monthLabel(lang, m)}
-              </button>
-            ))}
+      {/* Month jump nav (sticky-first, fixed fallback) */}
+      {useFixedMonthNav ? (
+        <div style={{ height: monthNavHeight }} aria-hidden="true" />
+      ) : null}
+
+      <div
+        ref={monthNavRef}
+        className={[
+          useFixedMonthNav
+            ? "fixed left-0 right-0 z-40 border-b border-zinc-200/80 bg-gradient-to-b from-white/95 to-zinc-50/80 shadow-[0_6px_18px_rgba(0,0,0,0.06)] backdrop-blur-xl"
+            : "sticky z-40 border-b border-zinc-200/80 bg-gradient-to-b from-white/95 to-zinc-50/80 shadow-[0_6px_18px_rgba(0,0,0,0.06)] backdrop-blur-xl",
+          "top-[var(--site-header-h)]",
+        ].join(" ")}
+      >
+        <div className="mx-auto w-full max-w-xl px-5 py-3">
+          <div className="rounded-2xl border border-black/5 bg-white/60 p-3 backdrop-blur">
+            <div className="text-[11px] font-medium text-zinc-500">
+              {copy.calendar.monthJump}
+            </div>
+            <div className="mt-2 flex gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch]">
+              {months.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => jumpToMonth(m)}
+                  className={[
+                    "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
+                    activeMonth === m
+                      ? "border-zinc-900 bg-zinc-900 text-white"
+                      : "border-black/10 bg-zinc-50 text-zinc-700 hover:bg-white",
+                  ].join(" ")}
+                >
+                  {monthLabel(lang, m)}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -189,12 +261,16 @@ export function BirthdayTimeline({
             <div
               key={g.month}
               id={`month-${g.month}`}
-              className="scroll-mt-20"
+              className="scroll-mt-[calc(var(--site-header-h)+var(--month-nav-h)+12px)]"
             >
-              <div className="sticky top-14 z-10 -mx-5 px-5">
-                <div className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3 py-1 text-xs font-semibold text-zinc-800 shadow-sm backdrop-blur">
-                  {monthLabel(lang, g.month)}
-                  <span className="text-zinc-500">{g.idols.length}</span>
+              <div className="sticky top-[calc(var(--site-header-h)+var(--month-nav-h)+12px)] z-10 -mx-5 px-5">
+                <div className="inline-flex items-center gap-2.5 rounded-full border border-black/10 bg-white/80 px-3.5 py-1.5 shadow-sm backdrop-blur">
+                  <span className="text-sm font-extrabold tracking-tight text-zinc-900">
+                    {monthLabel(lang, g.month)}
+                  </span>
+                  <span className="rounded-full border border-black/10 bg-zinc-900/5 px-2 py-0.5 text-xs font-bold tabular-nums text-zinc-700">
+                    {monthCountLabel(lang, g.idols.length)}
+                  </span>
                 </div>
               </div>
 

@@ -72,18 +72,20 @@ export function diffDaysToNextBirthday(
 
   let candidate: Date | null = null;
 
-  // Special-case Feb 29: jump to next leap year occurrence
+  // Special-case Feb 29:
+  // - leap year: Feb 29
+  // - non-leap year: treat as Mar 1 (policy: celebrate on 3/1)
   if (md.month === 2 && md.day === 29) {
-    let y = today.year;
-    while (true) {
-      if (isLeapYear(y)) {
-        const d = dateFromYmdJst(y, 2, 29);
-        if (d && d.getTime() >= startToday.getTime()) {
-          candidate = d;
-          break;
-        }
-      }
-      y += 1;
+    const y = today.year;
+    const thisYear = isLeapYear(y) ? dateFromYmdJst(y, 2, 29) : dateFromYmdJst(y, 3, 1);
+    if (!thisYear) return Number.NaN;
+    if (thisYear.getTime() >= startToday.getTime()) {
+      candidate = thisYear;
+    } else {
+      const nextY = y + 1;
+      candidate = isLeapYear(nextY)
+        ? dateFromYmdJst(nextY, 2, 29)
+        : dateFromYmdJst(nextY, 3, 1);
     }
   } else {
     candidate = dateFromYmdJst(today.year, md.month, md.day);

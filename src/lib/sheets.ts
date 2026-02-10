@@ -106,7 +106,12 @@ export async function fetchIdols(): Promise<Idol[]> {
   const url = process.env.SHEET_CSV_URL;
   if (!url) {
     throw new Error(
-      "SHEET_CSV_URL が未設定です。.env.local に CSV公開URL を設定してください。"
+      [
+        "SHEET_CSV_URL が未設定です。",
+        "プロジェクト直下に `.env.local` を作成し、Google Sheets のCSV公開URLを設定してください。",
+        "テンプレ: `env.example`（コピーして `.env.local` を作成）",
+        "設定後は `npm run dev` を再起動してください。",
+      ].join(" ")
     );
   }
 
