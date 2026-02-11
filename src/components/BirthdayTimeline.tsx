@@ -5,8 +5,8 @@ import type { Lang } from "@/lib/i18n";
 import { t } from "@/lib/i18n";
 import type { IdolWithDiff } from "@/lib/birthday-filters";
 import { getIdolDisplayName } from "@/lib/sheets";
-import { buildBirthdayXIntentUrl } from "@/lib/x-intent";
 import { parseMmdd } from "@/lib/birthday";
+import { IdolCard } from "@/components/IdolCard";
 
 const LS_OSHI_ONLY = "oshi:calendar:oshiOnly";
 const LS_OSHI_IDS = "oshicale:favorites";
@@ -72,6 +72,22 @@ type MonthGroup = {
   idols: IdolWithDiff[];
 };
 
+type SearchType = "idol" | "group";
+
+type SearchIndexItem = {
+  id: string;
+  type: SearchType;
+  label: string;
+  subtitle?: string;
+  searchTexts: string[];
+  idolId?: string;
+  groupToken?: string;
+};
+
+type SelectedFilter =
+  | { type: "idol"; idolId: string; label: string }
+  | { type: "group"; groupToken: string; label: string };
+
 function groupByUpcomingMonth(list: IdolWithDiff[]): MonthGroup[] {
   const groups: MonthGroup[] = [];
   let current: MonthGroup | null = null;
@@ -91,6 +107,107 @@ function groupByUpcomingMonth(list: IdolWithDiff[]): MonthGroup[] {
   return groups;
 }
 
+function normalizeForSearch(input: string): string {
+  const normalized = input
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase();
+  return normalized.replace(/[\u30a1-\u30f6]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0x60)
+  );
+}
+
+function splitGroupAliases(groupName?: string): string[] {
+  const raw = (groupName ?? "").trim();
+  if (!raw) return [];
+  const parts = raw
+    .split(/[\/／]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return Array.from(new Set(parts));
+}
+
+function buildSearchIndex(list: IdolWithDiff[], lang: Lang): SearchIndexItem[] {
+  const items: SearchIndexItem[] = [];
+  const groupMap = new Map<
+    string,
+    { label: string; originals: Set<string>; idolCount: number }
+  >();
+
+  for (const idol of list) {
+    const displayName = getIdolDisplayName(idol, lang);
+    const names = [
+      displayName,
+      idol.name_ja ?? "",
+      idol.name_ko ?? "",
+      idol.slug ?? "",
+    ].filter(Boolean);
+
+    const groupFull = idol.group_name?.trim() ?? "";
+    const groupTokens = splitGroupAliases(groupFull);
+    const comboTexts = names.flatMap((n) =>
+      [groupFull, ...groupTokens].filter(Boolean).map((g) => `${n} ${g}`)
+    );
+
+    items.push({
+      id: `idol:${idol.id}`,
+      type: "idol",
+      label: displayName,
+      subtitle: groupFull || "—",
+      idolId: idol.id,
+      searchTexts: [...names, groupFull, ...groupTokens, ...comboTexts]
+        .filter(Boolean)
+        .map(normalizeForSearch),
+    });
+
+    for (const token of groupTokens) {
+      const key = normalizeForSearch(token);
+      const existing = groupMap.get(key);
+      if (existing) {
+        existing.idolCount += 1;
+        if (groupFull) existing.originals.add(groupFull);
+      } else {
+        groupMap.set(key, {
+          label: token,
+          originals: new Set(groupFull ? [groupFull] : []),
+          idolCount: 1,
+        });
+      }
+    }
+  }
+
+  for (const [tokenKey, group] of groupMap.entries()) {
+    const originals = Array.from(group.originals);
+    items.push({
+      id: `group:${tokenKey}`,
+      type: "group",
+      label: group.label,
+      subtitle: `${group.idolCount}`,
+      groupToken: tokenKey,
+      searchTexts: [group.label, ...originals].map(normalizeForSearch),
+    });
+  }
+
+  return items;
+}
+
+function renderHighlighted(text: string, query: string): React.ReactNode {
+  const q = query.trim();
+  if (!q) return text;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return text;
+  const end = idx + q.length;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="rounded bg-zinc-900/10 px-0.5 text-zinc-900">
+        {text.slice(idx, end)}
+      </mark>
+      {text.slice(end)}
+    </>
+  );
+}
+
 export function BirthdayTimeline({
   lang,
   idols,
@@ -105,8 +222,16 @@ export function BirthdayTimeline({
   const [favoritesLoaded, setFavoritesLoaded] = useState(false);
   const [monthNavHeight, setMonthNavHeight] = useState(0);
   const [useFixedMonthNav, setUseFixedMonthNav] = useState(false);
-  const [activeMonth, setActiveMonth] = useState<number | null>(null);
+  const [activeMonthAnchor, setActiveMonthAnchor] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [isSuggestOpen, setIsSuggestOpen] = useState(false);
+  const [activeSuggestionIdx, setActiveSuggestionIdx] = useState(-1);
+  const [selectedFilter, setSelectedFilter] = useState<SelectedFilter | null>(
+    null
+  );
   const monthNavRef = useRef<HTMLDivElement | null>(null);
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setOshiOnly(loadBool(LS_OSHI_ONLY, false));
@@ -147,20 +272,123 @@ export function BirthdayTimeline({
     saveStringArray(LS_OSHI_IDS, Array.from(oshiIds));
   }, [oshiIds, favoritesLoaded]);
 
-  const filtered = useMemo(() => {
+  const baseFiltered = useMemo(() => {
     if (!oshiOnly) return idols;
     return idols.filter((x) => oshiIds.has(x.id));
   }, [idols, oshiOnly, oshiIds]);
 
-  const groups = useMemo(() => groupByUpcomingMonth(filtered), [filtered]);
-
-  const months = useMemo(() => groups.map((g) => g.month), [groups]);
+  const searchIndex = useMemo(
+    () => buildSearchIndex(baseFiltered, lang),
+    [baseFiltered, lang]
+  );
 
   useEffect(() => {
-    if (activeMonth !== null) return;
-    if (months.length === 0) return;
-    setActiveMonth(months[0]);
-  }, [months, activeMonth]);
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim());
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const suggestions = useMemo(() => {
+    if (!debouncedQuery) return [];
+    const q = normalizeForSearch(debouncedQuery);
+    const scored = searchIndex
+      .map((item) => {
+        let score = Number.POSITIVE_INFINITY;
+        for (const text of item.searchTexts) {
+          const at = text.indexOf(q);
+          if (at === -1) continue;
+          const s = at === 0 ? 0 : 1;
+          if (s < score) score = s;
+        }
+        return { item, score };
+      })
+      .filter((x) => Number.isFinite(x.score))
+      .sort((a, b) => {
+        if (a.score !== b.score) return a.score - b.score;
+        return a.item.label.localeCompare(b.item.label);
+      })
+      .slice(0, 10)
+      .map((x) => x.item);
+    return scored;
+  }, [debouncedQuery, searchIndex]);
+
+  useEffect(() => {
+    if (!debouncedQuery) {
+      setIsSuggestOpen(false);
+      setActiveSuggestionIdx(-1);
+    }
+  }, [debouncedQuery]);
+
+  useEffect(() => {
+    const onDown = (ev: MouseEvent) => {
+      if (!searchWrapRef.current) return;
+      if (searchWrapRef.current.contains(ev.target as Node)) return;
+      setIsSuggestOpen(false);
+      setActiveSuggestionIdx(-1);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (!selectedFilter) {
+      const raw = query.trim();
+      if (!raw) return baseFiltered;
+      const q = normalizeForSearch(raw);
+      return baseFiltered.filter((idol) => {
+        const displayName = getIdolDisplayName(idol, lang);
+        const names = [
+          displayName,
+          idol.name_ja ?? "",
+          idol.name_ko ?? "",
+          idol.slug ?? "",
+        ];
+        const groupFull = idol.group_name ?? "";
+        const groupTokens = splitGroupAliases(groupFull);
+        const joined = names.flatMap((n) =>
+          [groupFull, ...groupTokens].filter(Boolean).map((g) => `${n} ${g}`)
+        );
+        const searchables = [...names, groupFull, ...groupTokens, ...joined]
+          .filter(Boolean)
+          .map(normalizeForSearch);
+        return searchables.some((s) => s.includes(q));
+      });
+    }
+    if (selectedFilter.type === "idol") {
+      return baseFiltered.filter((x) => x.id === selectedFilter.idolId);
+    }
+    return baseFiltered.filter((x) =>
+      splitGroupAliases(x.group_name)
+        .map(normalizeForSearch)
+        .includes(selectedFilter.groupToken)
+    );
+  }, [baseFiltered, selectedFilter]);
+
+  const groups = useMemo(() => groupByUpcomingMonth(filtered), [filtered]);
+
+  const monthAnchors = useMemo(
+    () =>
+      groups.map((g, idx) => ({
+        month: g.month,
+        anchorId: `month-${g.month}-${idx}`,
+      })),
+    [groups]
+  );
+
+  useEffect(() => {
+    if (monthAnchors.length === 0) {
+      setActiveMonthAnchor(null);
+      return;
+    }
+    if (!activeMonthAnchor) {
+      setActiveMonthAnchor(monthAnchors[0].anchorId);
+      return;
+    }
+    if (!monthAnchors.some((x) => x.anchorId === activeMonthAnchor)) {
+      setActiveMonthAnchor(monthAnchors[0].anchorId);
+    }
+  }, [monthAnchors, activeMonthAnchor]);
 
   const toggleOshi = (id: string) => {
     setOshiIds((prev) => {
@@ -171,15 +399,49 @@ export function BirthdayTimeline({
     });
   };
 
-  const jumpToMonth = (month: number) => {
-    setActiveMonth(month);
-    const el = document.getElementById(`month-${month}`);
+  const jumpToMonth = (anchorId: string) => {
+    setActiveMonthAnchor(anchorId);
+    const el = document.getElementById(anchorId);
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const selectSuggestion = (item: SearchIndexItem) => {
+    if (item.type === "idol" && item.idolId) {
+      setSelectedFilter({ type: "idol", idolId: item.idolId, label: item.label });
+      setQuery(item.label);
+    } else if (item.type === "group" && item.groupToken) {
+      setSelectedFilter({
+        type: "group",
+        groupToken: item.groupToken,
+        label: item.label,
+      });
+      setQuery(item.label);
+    }
+    setIsSuggestOpen(false);
+    setActiveSuggestionIdx(-1);
+  };
+
+  const selectGroupToken = (token: string) => {
+    const normalized = normalizeForSearch(token);
+    setSelectedFilter({ type: "group", groupToken: normalized, label: token });
+    setQuery(token);
+    setDebouncedQuery(token);
+    setIsSuggestOpen(false);
+    setActiveSuggestionIdx(-1);
   };
 
   const sectionStyle = {
     ["--month-nav-h" as never]: `${monthNavHeight}px`,
   } as React.CSSProperties;
+
+  const searchPlaceholder =
+    lang === "ko" ? "이름/그룹으로 검색" : "アイドル名・グループ名で検索";
+  const searchNoResult =
+    lang === "ko" ? "검색 결과가 없습니다" : "一致する候補がありません";
+  const idolTypeLabel = lang === "ko" ? "아이돌" : "アイドル";
+  const groupTypeLabel = lang === "ko" ? "그룹" : "グループ";
+  const clearFilterLabel = lang === "ko" ? "× 해제" : "× 解除";
+  const clearFilterAria = lang === "ko" ? "필터 해제" : "絞り込みを解除";
 
   return (
     <section
@@ -187,10 +449,147 @@ export function BirthdayTimeline({
       style={sectionStyle}
     >
       <div className="mt-4 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
           <h1 className="text-base font-semibold text-zinc-950">
             {copy.calendar.title}
           </h1>
+          <div ref={searchWrapRef} className="relative min-w-0 flex-1">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                if (selectedFilter) setSelectedFilter(null);
+                setIsSuggestOpen(Boolean(e.target.value.trim()));
+                setActiveSuggestionIdx(-1);
+              }}
+              onFocus={() => {
+                if (query.trim()) setIsSuggestOpen(true);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setIsSuggestOpen(false);
+                  setActiveSuggestionIdx(-1);
+                  return;
+                }
+                if (e.key === "ArrowDown") {
+                  if (suggestions.length === 0) return;
+                  e.preventDefault();
+                  setIsSuggestOpen(true);
+                  setActiveSuggestionIdx((prev) =>
+                    prev < suggestions.length - 1 ? prev + 1 : 0
+                  );
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  if (suggestions.length === 0) return;
+                  e.preventDefault();
+                  setIsSuggestOpen(true);
+                  setActiveSuggestionIdx((prev) =>
+                    prev > 0 ? prev - 1 : suggestions.length - 1
+                  );
+                  return;
+                }
+                if (e.key === "Enter") {
+                  if (!isSuggestOpen || suggestions.length === 0) return;
+                  e.preventDefault();
+                  const picked =
+                    activeSuggestionIdx >= 0
+                      ? suggestions[activeSuggestionIdx]
+                      : suggestions[0];
+                  if (picked) selectSuggestion(picked);
+                }
+              }}
+              placeholder={searchPlaceholder}
+              className="w-full rounded-full border border-black/10 bg-white/80 px-3 py-1.5 pr-16 text-xs text-zinc-800 shadow-sm outline-none transition-[background-color,box-shadow] placeholder:text-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10"
+            />
+            {(query || selectedFilter) && selectedFilter?.type !== "group" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery("");
+                  setDebouncedQuery("");
+                  setSelectedFilter(null);
+                  setIsSuggestOpen(false);
+                  setActiveSuggestionIdx(-1);
+                }}
+                aria-label={clearFilterAria}
+                className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-[11px] font-medium text-zinc-500 transition-colors hover:text-zinc-900"
+              >
+                {clearFilterLabel}
+              </button>
+            )}
+
+            {selectedFilter?.type === "group" ? (
+              <div className="mt-2 flex items-center justify-between rounded-2xl border border-black/5 bg-white/60 px-3 py-2 text-xs text-zinc-700">
+                <span className="min-w-0 truncate">
+                  {lang === "ko" ? "선택중: " : "選択中: "}
+                  <span className="font-semibold text-zinc-900">
+                    {selectedFilter.label}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuery("");
+                    setDebouncedQuery("");
+                    setSelectedFilter(null);
+                    setIsSuggestOpen(false);
+                    setActiveSuggestionIdx(-1);
+                  }}
+                  className="shrink-0 rounded-full border border-black/10 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-zinc-500 transition-colors hover:bg-white hover:text-zinc-900"
+                  aria-label={clearFilterAria}
+                >
+                  {clearFilterLabel}
+                </button>
+              </div>
+            ) : null}
+
+            {isSuggestOpen && (
+              <div className="absolute left-0 right-0 z-50 mt-2 overflow-hidden rounded-2xl border border-black/10 bg-white/95 shadow-[0_12px_28px_rgba(0,0,0,0.10)] backdrop-blur-xl">
+                {suggestions.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-zinc-500">
+                    {searchNoResult}
+                  </div>
+                ) : (
+                  <ul className="max-h-80 overflow-auto py-1">
+                    {suggestions.map((item, idx) => (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          onMouseDown={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            selectSuggestion(item);
+                          }}
+                          className={[
+                            "flex w-full items-start justify-between gap-3 px-3 py-2 text-left transition-colors",
+                            idx === activeSuggestionIdx
+                              ? "bg-zinc-900/5"
+                              : "hover:bg-zinc-900/5",
+                          ].join(" ")}
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-zinc-900">
+                              {renderHighlighted(item.label, debouncedQuery)}
+                            </div>
+                            <div className="truncate text-xs text-zinc-500">
+                              {item.type === "idol"
+                                ? `${idolTypeLabel} · ${item.subtitle ?? "—"}`
+                                : `${groupTypeLabel} · ${item.subtitle ?? "0"}`}
+                            </div>
+                          </div>
+                          <span className="shrink-0 rounded-full border border-black/10 bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-zinc-600">
+                            {item.type === "idol" ? idolTypeLabel : groupTypeLabel}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={() => setOshiOnly((v) => !v)}
@@ -226,19 +625,19 @@ export function BirthdayTimeline({
               {copy.calendar.monthJump}
             </div>
             <div className="mt-2 flex gap-2 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch]">
-              {months.map((m) => (
+              {monthAnchors.map((item) => (
                 <button
-                  key={m}
+                  key={item.anchorId}
                   type="button"
-                  onClick={() => jumpToMonth(m)}
+                  onClick={() => jumpToMonth(item.anchorId)}
                   className={[
                     "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors",
-                    activeMonth === m
+                    activeMonthAnchor === item.anchorId
                       ? "border-zinc-900 bg-zinc-900 text-white"
                       : "border-black/10 bg-zinc-50 text-zinc-700 hover:bg-white",
                   ].join(" ")}
                 >
-                  {monthLabel(lang, m)}
+                  {monthLabel(lang, item.month)}
                 </button>
               ))}
             </div>
@@ -257,10 +656,12 @@ export function BirthdayTimeline({
         <p className="mt-6 text-sm text-zinc-600">{copy.home.empty}</p>
       ) : (
         <div className="mt-6 space-y-10">
-          {groups.map((g) => (
+          {groups.map((g, idx) => {
+            const anchorId = `month-${g.month}-${idx}`;
+            return (
             <div
-              key={g.month}
-              id={`month-${g.month}`}
+              key={anchorId}
+              id={anchorId}
               className="scroll-mt-[calc(var(--site-header-h)+var(--month-nav-h)+12px)]"
             >
               <div className="sticky top-[calc(var(--site-header-h)+var(--month-nav-h)+12px)] z-10 -mx-5 px-5">
@@ -276,83 +677,36 @@ export function BirthdayTimeline({
 
               <ol className="mt-3 space-y-3">
                 {g.idols.map((idol) => {
-                  const name = getIdolDisplayName(idol, lang);
-                  const xHref = buildBirthdayXIntentUrl({
-                    lang,
-                    idolName: name,
-                    xUrl: idol.x_url,
-                    sourceUrl: idol.source_url,
-                  });
                   const xProfileHref = idol.x_url?.trim();
                   const isOshi = oshiIds.has(idol.id);
 
                   return (
-                    <li
+                    <IdolCard
                       key={idol.id}
-                      className={[
-                        "rounded-3xl border border-black/5 bg-white/70 p-4 shadow-[0_8px_24px_rgba(0,0,0,0.06)] backdrop-blur",
-                        xProfileHref
-                          ? "cursor-pointer transition-all duration-200 ease-out hover:-translate-y-0.5 hover:bg-white/85 hover:shadow-[0_14px_38px_rgba(0,0,0,0.10)] hover:border-pink-200/70 hover:ring-2 hover:ring-pink-300/35 active:translate-y-0 active:scale-[0.99]"
-                          : "",
-                      ].join(" ")}
-                      onClick={() => {
-                        if (!xProfileHref) return;
-                        window.open(xProfileHref, "_blank", "noopener,noreferrer");
+                      lang={lang}
+                      idol={idol}
+                      size="calendar"
+                      onSelectGroupToken={selectGroupToken}
+                      activeGroupToken={
+                        selectedFilter?.type === "group" ? selectedFilter.label : null
+                      }
+                      favorite={{
+                        isFavorite: isOshi,
+                        onToggle: () => toggleOshi(idol.id),
                       }}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center rounded-full bg-zinc-900/5 px-2 py-1 text-[11px] font-semibold tabular-nums text-zinc-700">
-                              {mmddLabel(idol.birthday_mmdd)}
-                            </span>
-                            <span className="text-[11px] font-medium text-zinc-500 tabular-nums">
-                              {idol.diffDays === 0 ? "today" : `+${idol.diffDays}d`}
-                            </span>
-                          </div>
-                          <div className="mt-2 truncate text-base font-semibold text-zinc-950">
-                            {name}
-                          </div>
-                          <div className="mt-0.5 truncate text-sm text-zinc-600">
-                            {idol.group_name ?? "—"}
-                          </div>
-                        </div>
-
-                        <div className="flex shrink-0 flex-col items-end gap-2">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleOshi(idol.id);
-                            }}
-                            className={[
-                              "grid size-9 place-items-center rounded-2xl border text-sm font-semibold transition-colors",
-                              isOshi
-                                ? "border-zinc-900 bg-zinc-900 text-white"
-                                : "border-black/10 bg-white/70 text-zinc-700 hover:bg-white",
-                            ].join(" ")}
-                            aria-label={isOshi ? "unfavorite" : "favorite"}
-                          >
-                            ☆
-                          </button>
-
-                          <a
-                            href={xHref}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="rounded-full bg-zinc-900 px-3 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800"
-                          >
-                            {copy.hero.celebrateOnX}
-                          </a>
-                        </div>
-                      </div>
-                    </li>
+                      onCardClick={
+                        xProfileHref
+                          ? () =>
+                              window.open(xProfileHref, "_blank", "noopener,noreferrer")
+                          : undefined
+                      }
+                    />
                   );
                 })}
               </ol>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>

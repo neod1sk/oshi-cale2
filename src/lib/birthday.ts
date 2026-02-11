@@ -100,6 +100,45 @@ export function diffDaysToNextBirthday(
   return Math.round(diffMs / 86400000);
 }
 
+function birthdayDateForYearJst(year: number, month: number, day: number): Date | null {
+  if (month === 2 && day === 29) {
+    // Policy: non-leap years celebrate on 3/1
+    return isLeapYear(year) ? dateFromYmdJst(year, 2, 29) : dateFromYmdJst(year, 3, 1);
+  }
+  return dateFromYmdJst(year, month, day);
+}
+
+export function daysSinceBirthdayJst(
+  birthdayMmdd: string,
+  now: Date = new Date()
+): number {
+  const md = parseMmdd(birthdayMmdd);
+  if (!md) return Number.NaN;
+
+  const today = getTodayJst(now);
+  const startToday = startOfDayJst(today);
+  const thisYear = birthdayDateForYearJst(today.year, md.month, md.day);
+  if (!thisYear) return Number.NaN;
+
+  let lastBirthday = thisYear;
+  if (thisYear.getTime() > startToday.getTime()) {
+    const prev = birthdayDateForYearJst(today.year - 1, md.month, md.day);
+    if (!prev) return Number.NaN;
+    lastBirthday = prev;
+  }
+
+  const diffMs = startToday.getTime() - lastBirthday.getTime();
+  return Math.round(diffMs / 86400000);
+}
+
+export function canPostBirthdayX(
+  birthdayMmdd: string,
+  now: Date = new Date()
+): boolean {
+  const since = daysSinceBirthdayJst(birthdayMmdd, now);
+  return Number.isFinite(since) && since >= 0 && since <= 2;
+}
+
 export function sortByUpcoming<T extends { diffDays: number; birthday_mmdd?: string; slug?: string; id?: string }>(
   list: T[]
 ): T[] {

@@ -40,7 +40,13 @@ type Dict = {
     placeholder: string;
     celebrate: string;
     celebrateOnX: string;
+    celebrateOnXAria: string;
     tweetTemplate: string; // "{NAME}" placeholder
+  };
+  footer: {
+    bannerLead: string;
+    bannerTitle: string;
+    bannerLinkAria: string;
   };
 };
 
@@ -74,8 +80,14 @@ const dict: Record<Lang, Dict> = {
       todayBirthday: "今日の誕生日",
       placeholder: "仮データ",
       celebrate: "祝う",
-      celebrateOnX: "Xで祝う",
+      celebrateOnX: "Xでお祝い🎂",
+      celebrateOnXAria: "Xでお祝い（誕生日投稿）",
       tweetTemplate: "今日は{NAME}の誕生日！おめでとう🎂",
+    },
+    footer: {
+      bannerLead: "あなたにぴったりの推しが見つかる！",
+      bannerTitle: "【韓国地下アイドル診断】",
+      bannerLinkAria: "外部サイト（韓国地下アイドル診断）を新しいタブで開く",
     },
   },
   ko: {
@@ -99,16 +111,22 @@ const dict: Record<Lang, Dict> = {
       monthJump: "월 이동",
       oshiOnly: "전체 보기",
       all: "오시만 보기",
-      noOshi: "최애가 선택되지 않았습니다",
-      addOshi: "☆로 최애 등록",
+      noOshi: "오시가 선택되지 않았습니다",
+      addOshi: "☆로 오시 등록",
     },
     hero: {
       eyebrow: "OSHI CALENDAR",
       todayBirthday: "오늘의 생일",
       placeholder: "샘플",
       celebrate: "축하",
-      celebrateOnX: "X에서 축하",
+      celebrateOnX: "X로 축하🎂",
+      celebrateOnXAria: "X로 축하（생일 게시）",
       tweetTemplate: "오늘은 {NAME} 생일! 축하해요 🎂",
+    },
+    footer: {
+      bannerLead: "나에게 딱 맞는 오시를 찾아보세요!",
+      bannerTitle: "【지하아이돌 진단】",
+      bannerLinkAria: "외부 사이트(지하아이돌 진단)를 새 탭에서 열기",
     },
   },
 };

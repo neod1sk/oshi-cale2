@@ -23,6 +23,7 @@ export default async function Home({
   let todayList: ReturnType<typeof pickToday> = [];
   let yesterdayList: IdolWithDiff[] = [];
   let next30ListAll: ReturnType<typeof pickToday> = [];
+  let allList: IdolWithDiff[] = [];
 
   try {
     const idols = await fetchIdols();
@@ -32,6 +33,7 @@ export default async function Home({
     const now = debug ? new Date(`${debug}T00:00:00+09:00`) : new Date();
 
     const withDiff = sortBySoonest(attachDiffDays(idols, now));
+    allList = withDiff;
     todayList = pickToday(withDiff);
     next30ListAll = withDiff.filter((x) => x.diffDays <= 30);
 
@@ -59,6 +61,7 @@ export default async function Home({
     <main>
       <HomeHeroToday
         lang={lang}
+        allIdols={allList}
         todayIdols={todayList}
         yesterdayIdols={yesterdayList}
         next30Idols={next30}

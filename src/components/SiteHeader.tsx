@@ -9,7 +9,11 @@ export function SiteHeader({ lang }: { lang: Lang }) {
   return (
     <header className="sticky top-0 z-50 h-14 border-b border-black/5 bg-white/60 backdrop-blur-xl">
       <div className="mx-auto flex h-14 w-full max-w-xl items-center justify-between px-5">
-        <Link href={`/${lang}`} className="min-w-0">
+        <Link
+          href={`/${lang}`}
+          aria-label={lang === "ko" ? "홈으로 이동" : "トップページへ戻る"}
+          className="block min-w-0 rounded-md transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900/20"
+        >
           <div className="truncate text-sm font-semibold tracking-tight text-zinc-950">
             {copy.siteName}
           </div>

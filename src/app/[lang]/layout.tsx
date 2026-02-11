@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import { FooterBanner } from "@/components/FooterBanner";
 import { SiteHeader } from "@/components/SiteHeader";
 import { isLang, languages, t, type Lang } from "@/lib/i18n";
 import "../globals.css";
@@ -52,9 +53,10 @@ export default async function LangLayout({
   return (
     <html lang={lang}>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <div className="min-h-dvh bg-gradient-to-b from-white to-zinc-50">
+        <div className="flex min-h-dvh flex-col bg-gradient-to-b from-white to-zinc-50">
           <SiteHeader lang={lang} />
-          {children}
+          <div className="flex-1">{children}</div>
+          <FooterBanner lang={lang} />
         </div>
       </body>
     </html>
